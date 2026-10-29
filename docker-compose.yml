@@ -1,0 +1,163 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: college
+      POSTGRES_USER: college
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD}
+    volumes:
+      - college_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U college -d college"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+
+  db-test:
+    profiles: ["integration"]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: college_test
+      POSTGRES_USER: college_test
+      POSTGRES_PASSWORD: ${POSTGRES_TEST_PASSWORD:-disposable-test-only}
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U college_test -d college_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set a unique REDIS_PASSWORD}
+    command: ["sh", "-c", "redis-server --requirepass \"$${REDIS_PASSWORD}\" --save '' --appendonly no"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  clamav:
+    image: clamav/clamav:1.4
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+  mailpit:
+    profiles: ["development"]
+    image: axllent/mailpit:v1.21.8
+    ports:
+      - "127.0.0.1:8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    env_file:
+      - .env
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://college:${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD}@db:5432/college
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set a unique JWT_SECRET_KEY}
+      CORS_ORIGINS: '${CORS_ORIGINS:-["http://127.0.0.1:5173","http://localhost:5173"]}'
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://127.0.0.1:5173}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_SENDER: ${SMTP_SENDER:-noreply@example.edu}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+      SMTP_SSL: ${SMTP_SSL:-false}
+      CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
+      RATE_LIMIT_STORAGE_URI: redis://:${REDIS_PASSWORD:?Set a unique REDIS_PASSWORD}@redis:6379/0
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+      UPLOADS_DIRECTORY: /data/uploads
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5000000}
+    volumes:
+      - college_uploads:/data/uploads
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres-tests:
+    profiles: ["integration"]
+    build:
+      context: ./backend
+    command: ["sh", "-c", "alembic upgrade head && pytest tests/test_postgres_integration.py -q"]
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://college_test:${POSTGRES_TEST_PASSWORD:?Set a separate POSTGRES_TEST_PASSWORD}@db-test:5432/college_test
+      TEST_DATABASE_URL: postgresql+psycopg://college_test:${POSTGRES_TEST_PASSWORD:?Set a separate POSTGRES_TEST_PASSWORD}@db-test:5432/college_test
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set a unique JWT_SECRET_KEY}
+      CORS_ORIGINS: '["http://127.0.0.1:5173"]'
+      RATE_LIMIT_STORAGE_URI: memory://
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_SENDER: tests@example.edu
+      SMTP_STARTTLS: "false"
+      CLAMAV_HOST: ""
+    depends_on:
+      db-test:
+        condition: service_healthy
+
+  frontend:
+    profiles: ["development"]
+    image: node:22-alpine
+    working_dir: /workspace
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_URL: http://127.0.0.1:8000/api/v1
+    volumes:
+      - .:/workspace
+      - frontend_node_modules:/workspace/node_modules
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - api
+
+  frontend-prod:
+    profiles: ["production"]
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: /api/v1
+    depends_on:
+      - api
+
+  caddy:
+    profiles: ["production"]
+    image: caddy:2-alpine
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend-prod
+
+volumes:
+  college_data:
+  college_uploads:
+  frontend_node_modules:
+  caddy_data:
+  caddy_config:
