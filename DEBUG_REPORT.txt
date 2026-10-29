@@ -1,0 +1,61 @@
+WEBPAGE DEBUG REPORT
+Date: 2026-10-28
+Page: http://127.0.0.1:5173/
+
+FINDINGS
+1. The page initially could not be opened because no web server was listening
+   on 127.0.0.1:5173. Starting the Vite development server made the page load.
+2. The frontend is configured to call the API at
+   http://127.0.0.1:8000/api/v1, but that service is not running. Browser
+   requests to /programs, /news, /notices, and /events fail with
+   net::ERR_CONNECTION_REFUSED.
+3. As a result, live program/news content is unavailable and the home page
+   displays sample/fallback content with an API warning.
+4. The site branding is still configured with placeholder institution details
+   such as "Your College Name" and "City, State, Country" in src/config.ts.
+
+SOLUTION
+1. Start the frontend from the project directory:
+   npm.cmd run dev -- --host 127.0.0.1
+2. For live content, configure the backend environment first: copy
+   .env.example to .env and replace the required placeholder secrets with
+   unique values. Then start the API and its required services:
+   docker compose up --build db redis api
+   The API container runs database migrations before starting.
+3. Confirm the API responds at http://127.0.0.1:8000/health, then reload the
+   webpage and verify the failed API requests are gone.
+4. Replace the placeholder institution metadata in src/config.ts with
+   verified college information before publishing.
+
+VALIDATION
+- Frontend tests: passed (5 tests).
+- Production build: passed (TypeScript check and Vite build).
+- No frontend test/build failure was found; the reported runtime issue is the
+  stopped API service and unfinished site configuration.
+
+FOLLOW-UP DEBUGGING AND FIXES
+Date: 2026-10-28
+
+ADDITIONAL ISSUE FOUND
+The home page loaded news, notices, and events with Promise.all. This made the
+whole updates section fail if even one endpoint was unavailable, hiding
+successful results from the other endpoints.
+
+FIX APPLIED
+- Updated src/App.tsx to load updates independently with Promise.allSettled.
+- Successful news, notices, or events now remain visible when another endpoint
+  fails. A visible warning lists distinct service errors, and a complete
+  outage still reports an unavailable message.
+- Added a regression test in src/App.test.tsx for one failed updates endpoint
+  with successful news, confirming the news remains visible alongside the
+  warning.
+
+FOLLOW-UP VALIDATION
+- Frontend tests: passed (6 tests, including the new partial-outage test).
+- Production build: passed (TypeScript check and Vite build).
+- The frontend returned HTTP 200 during the earlier verification.
+- The backend was still unavailable at http://127.0.0.1:8000/health during
+  verification. This requires local backend services and configured .env values;
+  it cannot be corrected from the frontend alone.
+- College identity and contact fields remain placeholders in src/config.ts
+  because verified institutional details were not provided.
